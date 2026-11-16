@@ -9,6 +9,8 @@ declare module 'claude-code' {
       selected: MessageId // the message Ctrl+Up/Down landed on; null = the normal view
       here: MessageId // the message the side pane's block is on
       fill: Fill // the context window's fill, the pane's last line
+      tick: number // bumped for a recount: the message rows redraw once
+      paneRev: number // bumped when the list changes or a recount settles: the pane redraws
     }
   }
 }

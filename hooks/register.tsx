@@ -9,6 +9,10 @@ const selected = atom({ plugin: 'juicy-pane', key: 'selected' } as const, null)
 const here = atom({ plugin: 'juicy-pane', key: 'here' } as const, null)
 // the context window's fill, drawn as the pane's last line
 const fill = atom({ plugin: 'juicy-pane', key: 'fill' } as const, { window: 0 } as Fill)
+// bumped for a recount; only the message rows read it, so the band and the pane stay as they are
+const tick = atom({ plugin: 'juicy-pane', key: 'tick' } as const, 0)
+// bumped when the list changes and once a recount settles; only the pane reads it
+const paneRev = atom({ plugin: 'juicy-pane', key: 'paneRev' } as const, 0)
 
 // Ctrl+Up/Down (and Alt+Up/Down) are bound globally to these diff-view actions, idle outside
 // the diff view, so a band Button naming them is pressed by those chords from the prompt.
@@ -40,6 +44,9 @@ let counting = false
 let again = false
 const RECOUNT_MS = 300 // time for every row to redraw once (redraws run at most 10 a second)
 
+// Only the rows redraw (they read `tick`), from a timer, as a render hook may not write state.
+// Not $.ui.invalidate: it redraws the band and the pane too, and a Button whose site is drawn
+// twice in quick succession can be left pointing at a released handle: dead keys or clicks.
 function recount($: EngineInterface) {
   holding = true
   if (counting) {
@@ -49,13 +56,13 @@ function recount($: EngineInterface) {
   counting = true
   again = false
   gen += 1
-  $.ui.invalidate('ui.render')
+  $.clock.after(0, () => update($, tick, n => n + 1))
   $.clock.after(RECOUNT_MS, () => {
     counting = false
     if (again) return recount($)
     for (const [i, r] of report) if (r.gen !== gen) report.delete(i)
     holding = false
-    publish($)
+    publish($, true)
   })
 }
 
@@ -70,26 +77,32 @@ async function bigMove($: EngineInterface, move: () => Promise<unknown>) {
 }
 
 // Puts the block on the message you jumped to while it is on screen, else on the topmost one on
-// screen. Written from a timer, as a render hook may not write state; one write per burst.
+// screen. Written from a timer, as a render hook may not write state; one write per burst. After
+// a recount (`settle`) the pane draws once more even when the block stays: that last drawing,
+// alone, is the one its Buttons answer to.
 let publishing = false
-function publish($: EngineInterface) {
+let settleDue = false
+function publish($: EngineInterface, settle = false) {
+  if (settle) settleDue = true
   if (publishing || holding) return
   publishing = true
   $.clock.after(0, async () => {
     publishing = false
     if (holding) return
+    const settling = settleDue
+    settleDue = false
     const on = [...report].flatMap(([i, r]) => (r.isOn ? [i] : []))
-    let at: number
-    if (on.length === 0) {
-      // inside a long answer: the message whose answer it is, from how the last one left
-      if (lastOff === null) return
-      at = lastOff.viaBottom ? Math.max(0, lastOff.i - 1) : lastOff.i
-    } else {
+    let at = -1
+    if (on.length > 0) {
       const sel = index(await read($, selected))
       at = on.includes(sel) ? sel : Math.min(...on)
+    } else if (lastOff !== null) {
+      // inside a long answer: the message whose answer it is, from how the last one left
+      at = lastOff.viaBottom ? Math.max(0, lastOff.i - 1) : lastOff.i
     }
-    const id = msgs[at]?.id ?? null
-    if (id !== (await read($, here))) await update($, here, () => id)
+    const id = at === -1 ? undefined : (msgs[at]?.id ?? null)
+    if (id !== undefined && id !== (await read($, here))) await update($, here, () => id)
+    else if (settling) await update($, paneRev, n => n + 1)
   })
 }
 
@@ -99,20 +112,10 @@ function besideOthers(i: number) {
   return others.length === 0 || others.some(k => Math.abs(k - i) === 1)
 }
 
-// A row draws under an id of its own, not the transcript id scrolling takes, so rows are
-// matched to your messages by their text: drawn row id -> index in msgs.
-const drawnAs = new Map<string, number>()
-function rowIndex(rowId: string, text: string) {
-  const known = drawnAs.get(rowId)
-  if (known !== undefined) return known
-  const key = oneLine(text).slice(0, 80)
-  const taken = new Set(drawnAs.values())
-  const same = msgs.flatMap((m, i) => (m.label.slice(0, 80) === key ? [i] : []))
-  // shortcut: two messages with the same first 80 characters are told apart by draw order only
-  const i = same.find(k => !taken.has(k)) ?? same[0] ?? -1
-  if (i !== -1) drawnAs.set(rowId, i)
-  return i
-}
+// A row draws under its transcript id, or once the list re-chains under that id's first 24
+// characters plus its block's index; $.ui.scroll matches the same 24 characters.
+// shortcut: the 24 is Claude Code's internal rule (2.1.325), undocumented; if rows stop matching, check it
+const rowIndex = (rowId: string) => msgs.findIndex(m => m.id.slice(0, 24) === rowId.slice(0, 24))
 
 function remember(id: string, label: string) {
   if (index(id) === -1) msgs.push({ id, label: oneLine(label) })
@@ -123,50 +126,25 @@ function pushTail(id: string) {
   if (tail.length > 30) tail.shift()
 }
 
-// [uuid, parentUuid, isYourMessage, text]: the transcript file is megabytes (screenshots,
-// tool output), over the 4 MiB a mod may read, so python strips each row to this first.
-type Row = [string, string | null, boolean, string]
-const STRIP = `
-import json, sys
-out = []
-for line in open(sys.argv[1]):
-    try:
-        r = json.loads(line)
-    except Exception:
-        continue
-    if not r.get("uuid"):
-        continue
-    mine = r.get("type") == "user" and not r.get("isMeta") and (r.get("origin") or {}).get("kind") == "human"
-    c = (r.get("message") or {}).get("content")
-    text = c if isinstance(c, str) else next((b.get("text", "") for b in (c or []) if isinstance(b, dict) and b.get("type") == "text"), "")
-    out.append([r["uuid"], r.get("parentUuid"), mine, text[:200] if mine else ""])
-print(json.dumps(out))
-`
-
-// Your earlier messages, from this session's transcript file: the rows on screen are drawn
-// lazily, so the file is the only full list. Follows the parent chain from the newest row so
-// rewound branches are left out.
+// Your earlier messages, from the transcript (hooks/history.py): the rows on screen are drawn
+// lazily, so the file is the only full list. history.py follows the live branch, and into the
+// file a moved conversation was continued from.
+type History = { mine: [string, string][]; tail: string[] }
 async function loadHistory($: EngineInterface, cwd: string) {
   try {
     const home = await $.env.get('HOME')
-    const file = `${home}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, '-')}/${await $.session.id()}.jsonl`
-    const { exitCode, stdout } = await $.process.run(['python3', '-I', '-c', STRIP, file])
+    const folder = `${home}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, '-')}`
+    const script = `${$.plugin.root}/hooks/history.py`
+    const { exitCode, stdout } = await $.process.run(['python3', '-I', script, folder, await $.session.id()])
     if (exitCode !== 0) return
-    const rows = JSON.parse(stdout) as Row[]
-    const byId = new Map(rows.map(r => [r[0], r]))
-    const chain: Row[] = []
-    let r = rows.at(-1)
-    while (r) {
-      chain.push(r)
-      r = r[1] ? byId.get(r[1]) : undefined
-    }
-    chain.reverse()
+    const h = JSON.parse(stdout) as History
     const later = msgs.splice(0) // seen since, keep after
-    for (const [id, , mine, text] of chain) if (mine) remember(id, text)
+    for (const [id, text] of h.mine) remember(id, text)
     for (const m of later) remember(m.id, m.label)
-    tail.splice(0, tail.length, ...chain.slice(-30).map(row => row[0]))
-    drawnAs.clear() // indexes moved: match the rows again
-    report.clear()
+    tail.splice(0, tail.length, ...h.tail)
+    report.clear() // indexes moved
+    lastOff = null
+    await update($, paneRev, n => n + 1)
     recount($)
   } catch {
     // shortcut: no python3 or an unreadable file loads nothing; only messages sent from now on are reachable
@@ -195,18 +173,24 @@ async function toBottom($: EngineInterface) {
   })
 }
 
-async function move($: EngineInterface, step: -1 | 1) {
-  const at = index(await read($, selected))
-  const target = (at === -1 ? msgs.length : at) + step
-  if (target < 0) return // already on your first message
-  if (target >= msgs.length) return toBottom($)
-  await jumpTo($, target)
+// One press, one step: presses run in turn, so a held key's repeats never read the same place.
+let moving: Promise<unknown> = Promise.resolve()
+function move($: EngineInterface, step: -1 | 1) {
+  const run = moving.then(async () => {
+    const at = index(await read($, selected))
+    const target = (at === -1 ? msgs.length : at) + step
+    if (target < 0) return // already on your first message
+    if (target >= msgs.length) return toBottom($)
+    await jumpTo($, target)
+  })
+  moving = run.catch(() => undefined) // a failed step never blocks the next press
+  return run
 }
 
 // Terminal cells a character takes: 2 for emoji and East Asian wide letters, 0 for marks that
 // combine with the one before.
 const WIDE =
-  /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3fffd}]|\p{Extended_Pictographic}/u
+  /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3fffd}]|\p{Extended_Pictographic}/u
 const JOINING = /[\p{Mn}\p{Me}‍︀-️]/u
 const cells = (ch: string) => (JOINING.test(ch) ? 0 : WIDE.test(ch) ? 2 : 1)
 
@@ -241,6 +225,8 @@ export function gauge(f: Fill, width: number): string {
   return `ctx ${'█'.repeat(on)}${'░'.repeat(bar - on)}${tail}`.slice(0, width)
 }
 
+const TITLE = ' Your messages '
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -274,14 +260,16 @@ export const register: Register = on => {
       if (e.door === 'prompt' && e.origin.kind === 'composer' && !e.message.isMeta) {
         const block = e.message.content.find(b => b.type === 'text')
         remember(e.uuid, block && 'text' in block && typeof block.text === 'string' ? block.text : '')
-        recount($) // the list grew and Claude jumps to the bottom: redraw and recount
+        await update($, paneRev, n => n + 1)
+        recount($) // the list grew and Claude jumps to the bottom: recount
       }
     }
     return result
   })
 
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    const i = rowIndex(e.requestId, e.props.text)
+    await read($, tick) // a recount redraws every row once
+    const i = rowIndex(e.requestId)
     const seen = e.props.onScreen
     if (seen !== undefined && i !== -1) {
       const isOn = seen !== null
@@ -309,12 +297,14 @@ export const register: Register = on => {
     )
   })
 
-  // the list on the right, in claude-squad's style: a purple label, one line per message, a
-  // light block on the one where you are; click a line to jump
+  // the list on the right, in claude-squad's style: a purple label and where you are, one line
+  // per message, a light block on the one where you are; click a line to jump
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    await read($, paneRev)
     const below = await next(e) // what other mods add under the list
     const { Box, Button, Text } = $.ui.resolve(e)
     const at = index(await read($, here))
+    const sel = index(await read($, selected))
     const f = await read($, fill)
     const pct = percentOf(f)
     const ctxColor = pct >= 80 ? 'error' : pct >= 60 ? 'warning' : undefined
@@ -324,10 +314,16 @@ export const register: Register = on => {
     const focus = at !== -1 ? at : msgs.length - 1
     const start = Math.max(0, Math.min(focus - Math.floor(room / 2), msgs.length - room))
     const digits = String(msgs.length).length
+    const where = ` ${sel === -1 ? `${msgs.length} messages` : `${sel + 1}/${msgs.length}`}`
 
     return (
       <Box flexDirection="column">
-        <Text backgroundColor="merged" color="inverseText"> Your messages </Text>
+        <Box>
+          <Text backgroundColor="merged" color="inverseText">
+            {TITLE}
+          </Text>
+          {TITLE.length + where.length <= width && <Text dimColor>{where}</Text>}
+        </Box>
         {msgs.length === 0 && <Text dimColor>No messages found yet.</Text>}
         {msgs.slice(start, start + room).map((m, k) => {
           const i = start + k
@@ -349,12 +345,12 @@ export const register: Register = on => {
     )
   })
 
-  // the key line under the chat, in claude-squad's menu style: keys in color, words dim
+  // The key line under the chat, in claude-squad's menu style: keys in color, words dim. It reads
+  // no state, so every drawing is the same and its Buttons keep their handles (where you are is
+  // in the pane's header). Keys that were drawn with a counter here went dead after quick presses.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
 
-    const at = index(await read($, selected))
-    const where = at === -1 ? `${msgs.length} messages` : `${at + 1}/${msgs.length}`
     const rest = await next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
 
@@ -371,7 +367,6 @@ export const register: Register = on => {
             <Text color="permission">ctrl+↓</Text>
             <Text dimColor> next</Text>
           </Button>
-          <Text dimColor> · {where}</Text>
         </Box>
       </Box>
     )

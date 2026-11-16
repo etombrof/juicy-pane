@@ -62,8 +62,8 @@ test('the block follows the wheel within a tick, recounts after a jump, and line
     (await lines()).flatMap(t => (t.props.backgroundColor === 'permission' ? [t.text.trim()] : []))
 
   // the wheel: rows report as they cross the screen's edge, the block follows on the next tick
-  const first = await $.ui.mount(row('r1', 'first', ON))
-  const second = await $.ui.mount(row('r2', 'second', ON))
+  const first = await $.ui.mount(row('u0', 'first', ON))
+  const second = await $.ui.mount(row('u1', 'second', ON))
   await clock.advance(1)
   expect(await block()).toEqual(['1. first'])
   await first.redraw({ ...ROW, text: 'first', onScreen: null })
@@ -73,8 +73,8 @@ test('the block follows the wheel within a tick, recounts after a jump, and line
   // a big jump of Claude's own: rows vanish without a report and far ones appear; a recount fixes it
   await first.unmount()
   await second.unmount()
-  const fourth = await $.ui.mount(row('r4', 'fourth', ON))
-  const fifth = await $.ui.mount(row('r5', 'fifth', ON))
+  const fourth = await $.ui.mount(row('u3', 'fourth', ON))
+  const fifth = await $.ui.mount(row('u4', 'fifth', ON))
   await clock.advance(1000)
   expect(await block()).toEqual(['4. fourth'])
 
