@@ -281,7 +281,8 @@ export const register: Register = on => {
 
   // the list on the right, in claude-squad's style: a purple label, one line per message, a
   // light block on the one where you are; click a line to jump
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const below = await next(e) // what other mods add under the list (e.g. context-gauge)
     const { Box, Button, Text } = $.ui.resolve(e)
     const at = index(await read($, here))
     const width = e.props.bodyColumns - 1 // one cell spare so a line never wraps
@@ -306,6 +307,7 @@ export const register: Register = on => {
             </Button>
           )
         })}
+        {below}
       </Box>
     )
   })
