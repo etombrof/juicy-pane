@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-navigator",
+  "name": "juicy-pane",
   "owner": { "name": "etombrof" },
-  "plugins": [{ "name": "navigator", "source": "./" }]
+  "plugins": [{ "name": "juicy-pane", "source": "./" }]
 }

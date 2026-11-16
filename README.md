@@ -1,19 +1,20 @@
-# Claude Code Navigator
+# juicy-pane
 
-Jump between your own messages in Claude Code with Ctrl+↑ / Ctrl+↓.
+A side pane for Claude Code: jump between your own messages with Ctrl+↑ / Ctrl+↓, and see how full the context window is.
 
-![Claude Code Navigator: Ctrl+Up and Ctrl+Down jump between your messages](assets/navigator.gif)
+![juicy-pane: Ctrl+Up and Ctrl+Down jump between your messages](assets/navigator.gif)
 
 ## Features
 
 - **Ctrl+↑ / Ctrl+↓**: previous / next message, marked with an orange box.
 - **Ctrl+↓ after your last message**: back to the latest answer.
 - **Side pane**: your messages, one line each. Click one to jump to it.
+- **Context line**: `ctx ███░░░ 117k 12%` under the list. Yellow from 60%, red from 80%.
 
 ## Install
 
 ```
-/plugin install navigator --marketplace etombrof/claude-code-navigator
+/plugin install juicy-pane --marketplace etombrof/juicy-pane
 ```
 
 ## Requirements

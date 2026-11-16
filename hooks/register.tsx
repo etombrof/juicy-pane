@@ -1,16 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { Fill } from '../types'
+
 // the message Ctrl+Up/Down landed on (null: none, the normal view)
-const selected = atom({ plugin: 'navigator', key: 'selected' } as const, null)
+const selected = atom({ plugin: 'juicy-pane', key: 'selected' } as const, null)
 // the message the side pane's block is on; only the pane reads it, so a write redraws the pane alone
-const here = atom({ plugin: 'navigator', key: 'here' } as const, null)
+const here = atom({ plugin: 'juicy-pane', key: 'here' } as const, null)
+// the context window's fill, drawn as the pane's last line
+const fill = atom({ plugin: 'juicy-pane', key: 'fill' } as const, { window: 0 } as Fill)
 
 // Ctrl+Up/Down (and Alt+Up/Down) are bound globally to these diff-view actions, idle outside
 // the diff view, so a band Button naming them is pressed by those chords from the prompt.
 const UP = 'app:diffFileListUp'
 const DOWN = 'app:diffFileListDown'
-const PANE = 'navigator'
+const PANE = 'juicy-pane'
 const PANE_COLUMNS = 32
 
 // Your messages, oldest first, by row id (the id a UserMessage row renders under).
@@ -222,13 +226,39 @@ function fit(text: string, width: number) {
   return `${out}…${' '.repeat(width - 1 - used)}`
 }
 
+const short = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}m` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`)
+
+// percent as given, else worked out from tokens / window
+export const percentOf = (f: Fill) =>
+  f.percent ?? (f.tokens !== undefined && f.window > 0 ? Math.round((100 * f.tokens) / f.window) : 0)
+
+// "ctx ████░░░░ 38k 4%", never wider than the pane's width
+export function gauge(f: Fill, width: number): string {
+  const pct = percentOf(f)
+  const tail = f.tokens === undefined ? ' —' : ` ${short(f.tokens)} ${pct}%`
+  const bar = Math.max(0, width - 4 - tail.length)
+  const on = Math.min(bar, Math.round((bar * pct) / 100))
+  return `ctx ${'█'.repeat(on)}${'░'.repeat(bar - on)}${tail}`.slice(0, width)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     await $.command.register({ name: 'messages', description: 'Show the list of your messages on the right' })
     await loadHistory($, e.cwd)
+    const { context } = await $.session.usage()
+    await update($, fill, () => ({ tokens: context.tokens, percent: context.percent, window: context.window }))
     void $.ui.open({ id: PANE, title: 'Your messages', columns: PANE_COLUMNS })
     return result
+  })
+
+  // raised whenever the fill moves; free, no token-count call
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('context')) {
+      const { tokens, percent, window } = e.context
+      await update($, fill, () => ({ tokens, percent, window }))
+    }
+    return next(e)
   })
 
   on('command.run', { command: 'messages' }, async $ => {
@@ -282,11 +312,15 @@ export const register: Register = on => {
   // the list on the right, in claude-squad's style: a purple label, one line per message, a
   // light block on the one where you are; click a line to jump
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    const below = await next(e) // what other mods add under the list (e.g. context-gauge)
+    const below = await next(e) // what other mods add under the list
     const { Box, Button, Text } = $.ui.resolve(e)
     const at = index(await read($, here))
+    const f = await read($, fill)
+    const pct = percentOf(f)
+    const ctxColor = pct >= 80 ? 'error' : pct >= 60 ? 'warning' : undefined
     const width = e.props.bodyColumns - 1 // one cell spare so a line never wraps
-    const room = Math.max(3, (e.viewport?.rows ?? 24) - 5)
+    // the pane's own rows, less the header, the ctx line and one row kept for other mods
+    const room = Math.max(3, e.props.scroll.bodyRows - 2 - (below ? 1 : 0))
     const focus = at !== -1 ? at : msgs.length - 1
     const start = Math.max(0, Math.min(focus - Math.floor(room / 2), msgs.length - room))
     const digits = String(msgs.length).length
@@ -307,6 +341,9 @@ export const register: Register = on => {
             </Button>
           )
         })}
+        <Text color={ctxColor} dimColor={!ctxColor}>
+          {gauge(f, width)}
+        </Text>
         {below}
       </Box>
     )

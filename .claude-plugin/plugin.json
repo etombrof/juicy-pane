@@ -1,6 +1,6 @@
 {
-  "name": "navigator",
-  "version": "0.1.0",
-  "description": "Ctrl+Up / Ctrl+Down jump between your own messages in fullscreen and outline the one you are on",
+  "name": "juicy-pane",
+  "version": "0.2.0",
+  "description": "A side pane for Claude Code: jump between your own messages with Ctrl+Up / Ctrl+Down, and see how full the context window is",
   "types": "./types/index.d.ts"
 }

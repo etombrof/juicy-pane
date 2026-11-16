@@ -1,9 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = {
-  plugin: 'navigator',
+  plugin: 'juicy-pane',
   component: 'Pane',
-  requestId: 'navigator',
+  requestId: 'juicy-pane',
   surface: 'terminal',
   props: {
     title: 'Your messages',
@@ -20,7 +20,7 @@ const ROW = { origin: { kind: 'composer' }, isExpanded: true } as const
 
 const row = (requestId: string, text: string, onScreen: typeof ON | null) =>
   ({
-    plugin: 'navigator',
+    plugin: 'juicy-pane',
     component: 'UserMessage',
     requestId,
     surface: 'terminal',
