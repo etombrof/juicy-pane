@@ -1,5 +1,7 @@
 # juicy-pane
 
+It's good, it's juicy 🧃
+
 A side pane for Claude Code: jump between your own messages with Ctrl+↑ / Ctrl+↓, and see how full the context window is.
 
 ![juicy-pane: Ctrl+Up and Ctrl+Down jump between your messages](assets/navigator.gif)
