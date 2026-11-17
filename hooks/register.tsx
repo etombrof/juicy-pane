@@ -38,6 +38,9 @@ const report = new Map<number, { isOn: boolean; gen: number; cutBelow: boolean }
 // The last of your messages to leave the screen, and whether it left at the bottom (you scrolled
 // up, into the answer above it).
 let lastOff: { i: number; viaBottom: boolean } | null = null
+// Ctrl+Down went past your last message, to the bottom: like a jump to it, the block keeps to it
+// while it is on screen (else the one above it, also on screen there, took it: a step down went up)
+let pastEnd = false
 let gen = 0
 let holding = false // a recount is due or running: the block stays where it is
 let counting = false
@@ -95,7 +98,8 @@ function publish($: EngineInterface, settle = false) {
     let at = -1
     if (on.length > 0) {
       const sel = index(await read($, selected))
-      at = on.includes(sel) ? sel : Math.min(...on)
+      const want = sel === -1 && pastEnd ? msgs.length - 1 : sel
+      at = on.includes(want) ? want : Math.min(...on)
     } else if (lastOff !== null) {
       // inside a long answer: the message whose answer it is, from how the last one left
       at = lastOff.viaBottom ? Math.max(0, lastOff.i - 1) : lastOff.i
@@ -154,6 +158,7 @@ async function loadHistory($: EngineInterface, cwd: string) {
 async function jumpTo($: EngineInterface, i: number) {
   const m = msgs[i]
   if (m === undefined) return
+  pastEnd = false
   await bigMove($, async () => {
     await update($, here, () => m.id)
     await update($, selected, () => m.id)
@@ -163,13 +168,16 @@ async function jumpTo($: EngineInterface, i: number) {
 
 // Back to the latest answer: the newest row that is a drawn instance, bottom edge in view.
 async function toBottom($: EngineInterface) {
+  pastEnd = true
   await bigMove($, async () => {
     await update($, here, () => msgs.at(-1)?.id ?? null) // a first guess; the recount settles it
     await update($, selected, () => null)
     for (const id of [...tail].reverse()) {
       const moved = await $.ui.scroll({ to: { requestId: id }, block: 'end' }).catch(() => ({ deny: 'failed' }))
-      if (!('deny' in moved)) return
+      if (!('deny' in moved)) break
     }
+    // none of your messages on screen: the bottom is your last one's answer, whatever left before
+    lastOff = { i: msgs.length - 1, viaBottom: false }
   })
 }
 
@@ -374,6 +382,7 @@ export const register: Register = on => {
 
   // a new message ends the jumping; a failed reset must never block sending it
   on('prompt.submit', async ($, e, next) => {
+    pastEnd = false
     await update($, selected, () => null).catch(() => {})
     return next(e)
   })
